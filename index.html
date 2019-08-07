@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang = "en">
+<head>
+    <style>
+        body { margin: 0; }
+        svg { width: 100vw; height: 100vh; }
+        #controls {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            height: 35px;
+        }
+        select {
+            width: 50px;
+            height: 100%;
+            font-size: 15px;
+            border-radius: 20px;
+            display: none;
+        }
+        button {
+            height: 100%;
+            padding: 0 20px;
+            border-radius: 5px;
+            margin-right: 20px;
+        }
+
+    </style>
+</head>
+<body>
+    <svg></svg>
+    <div id="controls">
+        <button onclick="handleMap()">Map</button>
+        <button onclick="handleSort()">Sort</button>
+        <button id="groupBtn" onclick="handleGroup()">Group</button>
+        <select onchange="handleSplit(this)">
+            <option value="1">Split 1</option>
+            <option value="2">Split 2</option>
+            <option value="3">Split 3</option>
+            <option value="4">Split 4</option>
+            <option value="5">Split 5</option>
+            <option value="6">Split 6</option>
+        </select>
+    </div>
+
+    <script src="js/d3.min.js"></script>
+    <!-- Load Country data for map-->
+    <script src="js/countries.js"></script>
+    <script>
+        const svg = d3.select("svg").style("background", "#353147").on("click", reset);
+            
+        // Get actual width and height of svg element
+        const svgWidth = svg.node().getBoundingClientRect().width;
+        const svgHeight = svg.node().getBoundingClientRect().height;
+
+        const margin = 250;
+        const width = svgWidth - 2 * margin;
+        const height = svgHeight - 2 * margin;
+
+        // Create canvas
+        const chart = svg.append("g").attr("transform", `translate(${margin}, ${margin})`)
+            
+        /************************************************************************************
+        * Data
+        ************************************************************************************/
+        // Create random data
+        const childrenData = [];
+        for(let i = 0; i < 200; i++) {
+            let children = [];
+            for(let j = 0; j < Math.random() * 10; j++) {children.push({ value: Math.random() * 100 + 1 });}
+            childrenData.push({ name: "node", children: children});
+        }
+        const data = { name: "root", children: childrenData };
+
+        /************************************************************************************
+        * World Map
+        ************************************************************************************/
+        // Create projection
+        const projection = d3.geoEqualEarth()
+            .scale(width / Math.PI / 2)
+            .translate([width / 2, height / 2]);
+        
+        // Creat countries
+        const countries = chart.selectAll(".country").data(countriesMap[0].features);
+        countries.enter()
+            .append("path").attr("class", "country")
+            .style("fill", "#CBC3D8")
+            .style("stroke", "#FFF")
+            .style("opacity", 0)
+            .merge(countries)
+            .attr("d", d3.geoPath().projection(projection))
+        countries.exit().remove();
+
+        // Show world map
+        function showMap() {
+            chart.selectAll(".country").transition().duration(1000).style("opacity", 0.2);
+        }
+
+        // Hide world map
+        function hideMap() {
+            chart.selectAll(".country").transition().duration(1000).style("opacity", 0);
+        }
+        
+        /************************************************************************************
+        * Parent Nodes
+        ************************************************************************************/
+        // Calculate node radius using d3.pack()
+        const root = d3.hierarchy(data).sum(d => d.value);
+        const pack = d3.pack().size([width, height]);
+        // Only get parent nodes except for root
+        const nodeData = pack(root).descendants().filter(node => node.depth === 1);
+
+        // Calculate node position using d3.forceSimulation
+        let simulation = d3.forceSimulation(nodeData)
+            .force("charge", d3.forceManyBody().strength(1)) 
+            .force("x", d3.forceX().x(width / 2))
+            .force("y", d3.forceY().y(height / 2))
+            .force("collision", d3.forceCollide().radius(d => d.r))
+            .stop();
+        simulation.tick(300);
+
+        // Create nodes 
+        const nodes = chart.selectAll(".parent").data(nodeData);
+        nodes.enter()
+            .append("circle").attr("class", "parent") 
+            .style("fill", "#9E5AE7")
+            .merge(nodes)
+            .attr("r", d => d.r) // Node radius calcualted by pack
+            .attr("cx", d => d.x) // Node position calcualted by force
+            .attr("cy", d => d.y) // Node position calcualted by force
+            .on("click", function(selected, i) {
+                zoomIn(selected);
+                hideChildren();
+                showChildren.apply(this, [selected, i]);
+            }) 
+        nodes.exit().remove();         
+        
+        /************************************************************************************
+        * Children Nodes 
+        ************************************************************************************/
+        // Shows children nodes when parent node is clicked
+        function showChildren(node, index) {
+            // Get all children of the selected parent
+            let root = d3.hierarchy(data.children[index]).sum(d => d.value).sort((a, b) => b.value - a.value);
+            // Create circular packing layout inside parent node
+            let pack = d3.pack().size([node.r * 2, node.r * 2]);
+            // Only get children data
+            let nodeData = pack(root).descendants().filter(node => node.depth === 1);
+
+            // Create a group to put all children nodes
+            let group = chart.append("g").attr("transform", `translate(${node.x - node.r}, ${node.y - node.r})`);
+            const children = group.selectAll(".children").data(nodeData)
+            children.enter()
+                .append("circle").attr("class", "children").style("fill", "#E78DD2")
+                .merge(children)
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y)
+                .attr("r", d => d.r)
+            children.exit().remove();
+
+            d3.event.stopPropagation();
+        }
+
+        // Hide all children
+        function hideChildren() {
+            chart.selectAll(".children").transition().duration(300).style("opacity", 0).remove();
+        }
+
+        /************************************************************************************
+        * Group
+        ************************************************************************************/
+        // Split the nodes into 'clusters' number of clusters
+        function splitGroups(clusters) {
+            // centers[i] is the list of centers when nodes are splitted into i clusters
+            const centers = [
+                [], 
+                [{ x: width * 0.5, y: height * 0.5 }],
+                [{ x: width * 0.25, y: height * 0.5 }, { x: width * 0.75, y: height * 0.5 }],
+                [{ x: width * 0.25, y: height * 0.25}, { x: width * 0.75, y: height * 0.25 }, { x: width * 0.5, y: height * 0.75 }],
+                [{ x: width * 0.25, y: height * 0.25}, { x: width * 0.75, y: height * 0.25 }, 
+                 { x: width * 0.25, y: height * 0.75 }, { x: width * 0.75, y: height * 0.75 }],
+                [{ x: width * 0.125, y: height * 0.25}, { x: width * 0.5, y: height * 0.25}, { x: width * 0.875, y: height * 0.25},
+                 { x: width * 0.25, y: height * 0.75 }, { x: width * 0.75, y: height * 0.75 }],
+                [{ x: width * 0.125, y: height * 0.25}, { x: width * 0.5, y: height * 0.25}, { x: width * 0.875, y: height * 0.25},
+                 { x: width * 0.125, y: height * 0.75}, { x: width * 0.5, y: height * 0.75}, { x: width * 0.875, y: height * 0.75}]];
+            
+            simulation
+                .force("x", d3.forceX().x((d, i) => centers[clusters][i % clusters].x))
+                .force("y", d3.forceY().y((d, i) => centers[clusters][i % clusters].y))
+                .force("collision", d3.forceCollide().radius(d => d.r))
+                .alpha(1).restart().stop();
+            simulation.tick(300);
+                
+            chart.selectAll(".parent")
+                .transition()
+                .duration(1000)
+                .delay((d, i) => i * 5)
+                .attr("r", d => d.r)
+                .attr("cx", d => d.x) // Node position calcualted by force
+                .attr("cy", d => d.y) // Node position calcualted by force;
+        }
+
+        /************************************************************************************
+        * Zooming
+        ************************************************************************************/
+        // Zoom into a parent node when node is clicked
+        function zoomIn(node) {
+            chart.transition().duration(750)
+                .attr("transform", `translate(${svgWidth / 2}, ${svgHeight / 2}) 
+                                    scale(${root.r / node.r}) 
+                                    translate(${-node.x}, ${-node.y})`);
+            d3.event.stopPropagation();
+        }
+        
+        // Zoom out of parent node
+        function zoomOut() {
+            chart.transition().duration(750).attr("transform", `scale(1) translate(${margin}, ${margin})`);
+        }
+
+        /************************************************************************************
+        * Controls
+        ************************************************************************************/
+        // Show dropdown menu when Group button is clicked
+        function showSelect() {
+            // Remove Group button
+            d3.select("#groupBtn").style("display", "none");
+            // Show select dropdown
+            d3.select("select").style("display", "inline").transition().duration(500).style("width", "300px");
+        }
+
+        // Hide dropdown menu
+        function hideSelect() {
+            // hide select dropdown
+            d3.select("select").transition().duration(500).style("width", "100px").transition().style("display", "none")
+            d3.select("select").property("value", "1");
+            // Show Group button
+            d3.select("#groupBtn").transition().delay(500).style("display", "inline");
+        }
+
+        /************************************************************************************
+        * Event Handlers
+        ************************************************************************************/
+        // Resets the graph to default 
+        function reset() {
+            simulation.stop();
+            zoomOut();
+            hideChildren();
+            hideMap();
+
+            // Restore click functionality for nodes and svg
+            chart.selectAll(".parent").on("click", function(selected, i) {
+                zoomIn(selected);
+                hideChildren();
+                showChildren.apply(this, [selected, i]);
+            }) 
+            svg.on("click", reset);
+        }
+
+        // Handle Group button click event
+        function handleGroup() {
+            reset();
+            showSelect();  
+            splitGroups(1);
+        }
+
+        // Handle change in drop down menu
+        function handleSplit(event) {
+            reset();
+            
+            // Get to selected value from drop down
+            const clusters = event.value; 
+            splitGroups(clusters)
+        }
+
+        // Handle Map button click event
+        function handleMap() {
+            reset();
+            hideSelect();
+            
+            // List of cities specified by [longitude, latitude]
+            const cities = [
+                [134.638428, 34.149234], [77.837451,35.49401], [-14.508695,66.455892], [25.769208,35.354018],
+                [-97.140008,25.869997], [19.801613,42.500093], [22.183173,65.723741], [10.667804,56.081383],
+                [102.584932,12.186595], [38.792341,33.378686], [61.210817,35.650072], [-10.494315,8.715541],
+                [31.191409,-22.25151], [31.521001,-29.257387], [-87.316654,12.984686], [24.724982,34.919988],
+                [-9.034818,41.880571], [-80.302561,-3.404856], [12.995517,-4.781103],
+            ]
+
+            showMap();
+            simulation
+                .force("x", d3.forceX().x((d, i) => projection(cities[i % cities.length])[0]))
+                .force("y", d3.forceY().y((d, i) => projection(cities[i % cities.length])[1]))
+                .force("collision", d3.forceCollide().radius(d => d.r / 5))
+                .alpha(1).restart().stop();
+            simulation.tick(300);
+            
+            chart.selectAll(".parent")
+                .transition()
+                .duration(1000)
+                .delay((d, i) => i * 5)
+                .attr("r", d => d.r / 5) // Shrink node to position in map
+                .attr("cx", d => d.x) // Node position calcualted by force
+                .attr("cy", d => d.y); // Node position calcualted by force  
+            
+            // Remove click functionality on nodes and svg
+            chart.selectAll(".parent").on("click", null);
+            svg.on("click", null);
+        }   
+
+        // Handle Sort button click event
+        function handleSort() {
+            reset();
+            hideSelect();
+
+            const xScale = d3.scaleLinear()
+                .domain([d3.min(nodeData, d => d.r), d3.max(nodeData, d => d.r)])
+                .range([0, width]);
+            
+            simulation
+                .force("x", d3.forceX().x(d => xScale(d.r)))
+                .force("y", d3.forceY().y(height / 2))
+                .force("collision", d3.forceCollide().radius(d => d.r))
+                .alpha(1).restart().stop();
+            simulation.tick(300);
+
+            chart.selectAll(".parent")
+                .transition()
+                .duration(1000)
+                .delay((d, i) => i * 5)
+                .attr("r", d => d.r)
+                .attr("cx", d => d.x) // Node position calcualted by force
+                .attr("cy", d => d.y); // Node position calcualted by force 
+        }
+    </script>
+</body>
+</html>
